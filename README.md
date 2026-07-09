@@ -1,7 +1,8 @@
-
 # TimezoneBar
 
 <img width="2677" height="1557" alt="Timezone Bar" src="https://github.com/user-attachments/assets/1da65952-573f-44ab-955c-3b1c6ab70c32" />
+https://github.com/user-attachments/assets/6a1a5c50-d1ed-4882-92d3-27cd47865bd3
+
 
 A small macOS menu bar app for glancing at times across cities. 
 - Green lines: working/available hours for that city, usually “good time to meet.”
