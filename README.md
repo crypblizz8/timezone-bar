@@ -1,8 +1,9 @@
 
 # TimezoneBar
 
-A small macOS menu bar app for glancing at times across cities and scrubbing a shared meeting time.
 <img width="2677" height="1557" alt="Timezone Bar" src="https://github.com/user-attachments/assets/1da65952-573f-44ab-955c-3b1c6ab70c32" />
+
+A small macOS menu bar app for glancing at times across cities and scrubbing a shared meeting time.
 
 ## Run from SwiftPM
 
