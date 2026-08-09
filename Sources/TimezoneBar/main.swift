@@ -96,11 +96,11 @@ enum TimeBand: String, CaseIterable, Identifiable {
     var color: Color {
         switch self {
         case .working:
-            return Color.green.opacity(0.62)
+            return Color(red: 0.26, green: 0.78, blue: 0.38)
         case .edge:
-            return Color.yellow.opacity(0.58)
+            return Color(red: 0.95, green: 0.72, blue: 0.20)
         case .outside:
-            return Color.gray.opacity(0.28)
+            return Color(red: 0.46, green: 0.47, blue: 0.50).opacity(0.34)
         }
     }
 }
@@ -733,12 +733,7 @@ struct RootView: View {
                     .lineLimit(1)
                     .frame(height: 28, alignment: .center)
             } else {
-                Picker("", selection: $selectedTab) {
-                    Text("List").tag(0)
-                    Text("Align").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
+                SegmentedTabControl(selectedTab: $selectedTab)
             }
 
             Spacer()
@@ -782,6 +777,8 @@ struct RootView: View {
                     .frame(width: 28, height: 28)
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 28, height: 28)
             .help("Settings")
         }
         .padding(.leading, sheetMode == nil ? 12 : 20)
@@ -834,6 +831,39 @@ struct RootView: View {
         let remainder = abs(minutes) % 60
         let sign = minutes > 0 ? "+" : "-"
         return "\(sign)\(hours)h \(remainder)m from now"
+    }
+}
+
+struct SegmentedTabControl: View {
+    @Binding var selectedTab: Int
+
+    private let tabs = [(title: "List", value: 0), (title: "Align", value: 1)]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(tabs, id: \.value) { tab in
+                Button {
+                    selectedTab = tab.value
+                } label: {
+                    Text(tab.title)
+                        .font(.body.weight(selectedTab == tab.value ? .semibold : .regular))
+                        .foregroundStyle(selectedTab == tab.value ? Color.white : Color.primary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 28)
+                        .contentShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(selectedTab == tab.value ? Color.accentColor : Color.clear)
+                )
+                .accessibilityAddTraits(selectedTab == tab.value ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .frame(width: 150, height: 34)
+        .background(.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1003,6 +1033,8 @@ struct ReferenceClockRow: View {
             }
             .layoutPriority(1)
             Spacer()
+            Color.clear
+                .frame(width: 38, height: 1)
             Menu {
                 Button("Change Home City…") {
                     onChangeHome()
@@ -1015,6 +1047,7 @@ struct ReferenceClockRow: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .frame(width: 28, height: 28)
             .help("Home city options")
             .accessibilityLabel("Home city options")
         }
@@ -1053,13 +1086,8 @@ struct CityRow: View {
             }
             .layoutPriority(1)
             Spacer()
-            if store.dayOffset(for: city) != 0 {
-                Text(dayOffsetText)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.secondary.opacity(0.12), in: Capsule())
-            }
+            dayOffsetBadge
+                .frame(width: 38, alignment: .trailing)
             Menu {
                 Button {
                     store.setHome(city)
@@ -1084,9 +1112,24 @@ struct CityRow: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .frame(width: 28, height: 28)
             .help("City options")
         }
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var dayOffsetBadge: some View {
+        if store.dayOffset(for: city) != 0 {
+            Text(dayOffsetText)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.secondary.opacity(0.12), in: Capsule())
+        } else {
+            Color.clear
+                .frame(width: 1, height: 1)
+        }
     }
 
     private var dayOffsetText: String {
