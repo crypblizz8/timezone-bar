@@ -20,6 +20,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BIN_DIR/TimezoneBar" "$MACOS_DIR/TimezoneBar"
+cp "$ROOT_DIR/Assets/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 RESOURCE_BUNDLE="$(find "$BIN_DIR" -maxdepth 1 -type d -name 'TimezoneBar_*.bundle' -print -quit)"
 if [ -n "$RESOURCE_BUNDLE" ]; then
   cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
@@ -39,6 +40,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <string>__BUNDLE_IDENTIFIER__</string>
   <key>CFBundleName</key>
   <string>TimezoneBar</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
