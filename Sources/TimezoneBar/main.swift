@@ -42,6 +42,34 @@ struct City: Codable, Identifiable, Equatable {
 }
 
 struct Settings: Codable, Equatable {
+    enum AppearanceMode: String, Codable, CaseIterable {
+        case system
+        case light
+        case dark
+
+        var title: String {
+            switch self {
+            case .system:
+                return "System"
+            case .light:
+                return "Light"
+            case .dark:
+                return "Dark"
+            }
+        }
+
+        var colorScheme: ColorScheme? {
+            switch self {
+            case .system:
+                return nil
+            case .light:
+                return .light
+            case .dark:
+                return .dark
+            }
+        }
+    }
+
     enum SortMode: String, Codable, CaseIterable {
         case westToEast
         case manual
@@ -73,6 +101,7 @@ struct Settings: Codable, Equatable {
     var use24HourClock = true
     var showPinnedInMenuBar = false
     var sortMode: SortMode = .westToEast
+    var appearanceMode: AppearanceMode = .system
 }
 
 enum TimeBand: String, CaseIterable, Identifiable {
@@ -723,6 +752,7 @@ struct RootView: View {
         }
         .frame(width: 360, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
+        .preferredColorScheme(store.settings.appearanceMode.colorScheme)
     }
 
     private var header: some View {
@@ -731,59 +761,67 @@ struct RootView: View {
                 Text(sheetMode == .addCity ? "Add city" : "Home city")
                     .font(.headline)
                     .lineLimit(1)
-                    .frame(height: 28, alignment: .center)
+                    .frame(height: 34, alignment: .center)
+                    .padding(.leading, 18)
             } else {
                 SegmentedTabControl(selectedTab: $selectedTab)
             }
 
             Spacer()
-            if sheetMode != nil {
-                Button {
-                    sheetMode = nil
-                } label: {
-                    Image(systemName: "xmark")
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.borderless)
-                .help("Close")
-            } else {
-                Button {
-                    sheetMode = .addCity
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.borderless)
-                .help("Add city")
-            }
-
-            Menu {
-                Toggle("Pinned time in menu bar", isOn: $store.settings.showPinnedInMenuBar)
-                Toggle("24-hour clock", isOn: $store.settings.use24HourClock)
-                Button("Change Home City…") {
-                    sheetMode = .changeHome
-                }
-                Picker("Sort", selection: $store.settings.sortMode) {
-                    ForEach(Settings.SortMode.allCases, id: \.self) { mode in
-                        Text(mode.title).tag(mode)
+            HStack(spacing: 6) {
+                if sheetMode != nil {
+                    Button {
+                        sheetMode = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
                     }
+                    .buttonStyle(.borderless)
+                    .help("Close")
+                } else {
+                    Button {
+                        sheetMode = .addCity
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Add city")
                 }
-                Divider()
-                Button("Quit") {
-                    NSApp.terminate(nil)
+
+                Menu {
+                    Toggle("Pinned time in menu bar", isOn: $store.settings.showPinnedInMenuBar)
+                    Toggle("24-hour clock", isOn: $store.settings.use24HourClock)
+                    Button("Change Home City…") {
+                        sheetMode = .changeHome
+                    }
+                    Picker("Sort", selection: $store.settings.sortMode) {
+                        ForEach(Settings.SortMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    Picker("Appearance", selection: $store.settings.appearanceMode) {
+                        ForEach(Settings.AppearanceMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    Divider()
+                    Button("Quit") {
+                        NSApp.terminate(nil)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(width: 28, height: 28)
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .frame(width: 28, height: 28)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 28, height: 28)
+                .help("Settings")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: 28, height: 28)
-            .help("Settings")
         }
-        .padding(.leading, sheetMode == nil ? 12 : 20)
+        .frame(height: 58, alignment: .center)
+        .padding(.leading, 12)
         .padding(.trailing, 12)
-        .padding(.vertical, 12)
     }
 
     private var scrubber: some View {
@@ -853,6 +891,7 @@ struct SegmentedTabControl: View {
                         .contentShape(RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .background(
                     RoundedRectangle(cornerRadius: 7)
                         .fill(selectedTab == tab.value ? Color.accentColor : Color.clear)
