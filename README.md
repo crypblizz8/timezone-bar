@@ -1,43 +1,30 @@
 # TimezoneBar
 
-<img width="2677" height="1557" alt="Timezone Bar" src="https://github.com/user-attachments/assets/1da65952-573f-44ab-955c-3b1c6ab70c32" />
+![TimezoneBar showing the List, Align, and Add City views](screenshots/release-v0.5.0/04-cohesive-overview.png)
 
-TimezoneBar is a small macOS menu bar app for glancing at times across cities and finding reasonable meeting windows.
+TimezoneBar is a simple macOS menu bar app for checking times across cities and finding good meeting hours.
 
-It shows each city's local time, day offset, and availability band:
+- View local times in a list.
+- Compare working hours at a glance.
+- Add the cities you care about.
 
-- Green: working or available hours
-- Yellow: near hours, usually early morning or evening
-- Gray: outside normal hours
+Green means working hours, yellow means near working hours, and gray means outside working hours.
 
-The app stores cities and display settings locally in `UserDefaults`. It ships with a bundled city catalog and uses Foundation `TimeZone` and `Calendar` for timezone math.
+## Install
 
-## Download the latest release
+1. Download the latest Apple Silicon build from [GitHub Releases](https://github.com/crypblizz8/timezone-bar/releases/latest).
+2. Unzip it.
+3. Move `TimezoneBar.app` to Applications and open it.
 
-Download the latest Apple Silicon macOS ZIP from [GitHub Releases](https://github.com/crypblizz8/timezone-bar/releases/latest).
-Public release ZIPs should be signed with Apple Developer ID and notarized for macOS.
-
-After downloading:
-
-1. Unzip `TimezoneBar-*.zip`
-2. Move `TimezoneBar.app` to `/Applications`
-3. Open `TimezoneBar.app`
-
-## Run it locally
+## Develop
 
 ```sh
 swift run
 ```
 
-To build a local app bundle:
+Build the app bundle:
 
 ```sh
 ./Scripts/make-app.sh
 open .build/TimezoneBar.app
-```
-
-To create a local unsigned ZIP for testing:
-
-```sh
-MARKETING_VERSION=0.2.0 ALLOW_UNSIGNED=1 ./Scripts/make-zip.sh
 ```
