@@ -71,9 +71,38 @@ struct Settings: Codable, Equatable {
     }
 
     var use24HourClock = true
-    var showSeconds = false
     var showPinnedInMenuBar = false
     var sortMode: SortMode = .westToEast
+}
+
+enum TimeBand: String, CaseIterable, Identifiable {
+    case working
+    case edge
+    case outside
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .working:
+            return "Working"
+        case .edge:
+            return "Near Hours"
+        case .outside:
+            return "Outside"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .working:
+            return Color.green.opacity(0.62)
+        case .edge:
+            return Color.yellow.opacity(0.58)
+        case .outside:
+            return Color.gray.opacity(0.28)
+        }
+    }
 }
 
 struct CatalogCity: Codable, Identifiable {
@@ -101,6 +130,12 @@ final class TimezoneStore: ObservableObject {
         }
     }
 
+    @Published var homeCity: City? {
+        didSet {
+            persist()
+        }
+    }
+
     @Published var now = Date()
     @Published var scrubMinutes: Int? = nil
 
@@ -108,12 +143,20 @@ final class TimezoneStore: ObservableObject {
 
     private let citiesKey = "TimezoneBar.cities"
     private let settingsKey = "TimezoneBar.settings"
+    private let homeCityKey = "TimezoneBar.homeCity"
     private static let validWorkHourRange = 0...24
 
     init() {
         catalog = Self.loadCatalog()
         settings = Self.load(Settings.self, key: settingsKey) ?? Settings()
+        homeCity = Self.validatedHomeCity(Self.load(City.self, key: homeCityKey))
         cities = Self.validatedCities(Self.load([City].self, key: citiesKey) ?? Self.defaultCities())
+        Self.save(settings, key: settingsKey)
+        if let homeCity {
+            Self.save(homeCity, key: homeCityKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: homeCityKey)
+        }
     }
 
     var referenceDate: Date {
@@ -137,6 +180,25 @@ final class TimezoneStore: ObservableObject {
 
     var pinnedCity: City? {
         cities.first(where: \.pinned) ?? cities.first
+    }
+
+    var currentTimeZoneReference: City {
+        let timeZone = TimeZone.autoupdatingCurrent
+        return City(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001") ?? UUID(),
+            tzIdentifier: timeZone.identifier,
+            label: "Current",
+            flag: "",
+            workStart: 9,
+            workEnd: 17
+        )
+    }
+
+    var shouldShowHomeReference: Bool {
+        guard let homeCity else {
+            return false
+        }
+        return homeCity.tzIdentifier != TimeZone.autoupdatingCurrent.identifier
     }
 
     func tick() {
@@ -166,6 +228,35 @@ final class TimezoneStore: ObservableObject {
             !cities.contains(where: { $0.label == catalogCity.label && $0.tzIdentifier == catalogCity.tzIdentifier })
     }
 
+    @discardableResult
+    func addCustomCity(label: String, tzIdentifier: String) -> Bool {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canAddCustomCity(label: trimmedLabel, tzIdentifier: tzIdentifier) else {
+            return false
+        }
+
+        let flag = catalog.first(where: { $0.tzIdentifier == tzIdentifier })?.flag ?? "🌐"
+        cities.append(
+            City(
+                tzIdentifier: tzIdentifier,
+                label: String(trimmedLabel.prefix(60)),
+                flag: flag
+            )
+        )
+        return true
+    }
+
+    func canAddCustomCity(label: String, tzIdentifier: String) -> Bool {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cities.count < Self.maximumCityCount &&
+            !trimmedLabel.isEmpty &&
+            TimeZone(identifier: tzIdentifier) != nil &&
+            !cities.contains {
+                $0.tzIdentifier == tzIdentifier &&
+                    $0.label.compare(trimmedLabel, options: .caseInsensitive) == .orderedSame
+            }
+    }
+
     func remove(_ city: City) {
         cities.removeAll { $0.id == city.id }
         if cities.isEmpty {
@@ -180,6 +271,20 @@ final class TimezoneStore: ObservableObject {
             return copy
         }
         settings.showPinnedInMenuBar = true
+    }
+
+    func setHome(_ city: City) {
+        homeCity = City(
+            tzIdentifier: city.tzIdentifier,
+            label: city.label,
+            flag: city.flag,
+            workStart: city.workStart,
+            workEnd: city.workEnd
+        )
+    }
+
+    func setHome(_ catalogCity: CatalogCity) {
+        homeCity = City(tzIdentifier: catalogCity.tzIdentifier, label: catalogCity.label, flag: catalogCity.flag)
     }
 
     func updateWorkHours(for city: City, start: Int, end: Int) {
@@ -226,13 +331,36 @@ final class TimezoneStore: ObservableObject {
             .map { $0 }
     }
 
+    func homeResults(matching query: String) -> [CatalogCity] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = catalog.filter { TimeZone(identifier: $0.tzIdentifier) != nil }
+        guard !trimmed.isEmpty else {
+            return Array(base.prefix(8))
+        }
+        let needle = trimmed.lowercased()
+        return base
+            .filter { candidate in
+                ([candidate.label, candidate.country, candidate.tzIdentifier] + candidate.aliases)
+                    .contains { $0.lowercased().contains(needle) }
+            }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    func displayLocation(for timeZone: TimeZone) -> String {
+        let matches = catalog.filter { $0.tzIdentifier == timeZone.identifier }
+        if matches.count == 1, let match = matches.first {
+            return "\(match.country), \(match.label)"
+        }
+
+        return timeZone.localizedName(for: .generic, locale: .current) ?? timeZone.identifier
+    }
+
     func formattedTime(for city: City, date: Date? = nil) -> String {
         let formatter = DateFormatter()
         formatter.locale = .current
         formatter.timeZone = TimeZone(identifier: city.tzIdentifier)
-        formatter.dateFormat = settings.use24HourClock
-            ? (settings.showSeconds ? "HH:mm:ss" : "HH:mm")
-            : (settings.showSeconds ? "h:mm:ss a" : "h:mm a")
+        formatter.dateFormat = settings.use24HourClock ? "HH:mm" : "h:mm a"
         return formatter.string(from: date ?? referenceDate)
     }
 
@@ -246,9 +374,19 @@ final class TimezoneStore: ObservableObject {
 
     func dayOffset(for city: City, date: Date? = nil) -> Int {
         let instant = date ?? referenceDate
-        let localDay = dayOrdinal(for: instant, timeZone: .current)
-        let cityDay = dayOrdinal(for: instant, timeZone: TimeZone(identifier: city.tzIdentifier) ?? .current)
-        return cityDay - localDay
+        guard
+            let localDay = normalizedDay(for: instant, timeZone: .current),
+            let cityDay = normalizedDay(
+                for: instant,
+                timeZone: TimeZone(identifier: city.tzIdentifier) ?? .current
+            )
+        else {
+            return 0
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        return calendar.dateComponents([.day], from: localDay, to: cityDay).day ?? 0
     }
 
     func cityLocalHour(for city: City, at date: Date) -> Double {
@@ -258,16 +396,38 @@ final class TimezoneStore: ObservableObject {
         return Double(components.hour ?? 0) + Double(components.minute ?? 0) / 60
     }
 
-    private func dayOrdinal(for date: Date, timeZone: TimeZone) -> Int {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        let start = calendar.startOfDay(for: date)
-        return calendar.ordinality(of: .day, in: .era, for: start) ?? 0
+    func timeBand(for city: City, at date: Date) -> TimeBand {
+        timeBand(forLocalHour: cityLocalHour(for: city, at: date), workStart: city.workStart, workEnd: city.workEnd)
+    }
+
+    func timeBand(forLocalHour hour: Double, workStart: Int, workEnd: Int) -> TimeBand {
+        if hour >= Double(workStart), hour < Double(workEnd) {
+            return .working
+        }
+        if (hour >= 7 && hour < Double(workStart)) || (hour >= Double(workEnd) && hour < 22) {
+            return .edge
+        }
+        return .outside
+    }
+
+    private func normalizedDay(for date: Date, timeZone: TimeZone) -> Date? {
+        var localCalendar = Calendar(identifier: .gregorian)
+        localCalendar.timeZone = timeZone
+        let localDate = localCalendar.dateComponents([.era, .year, .month, .day], from: date)
+
+        var neutralCalendar = Calendar(identifier: .gregorian)
+        neutralCalendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        return neutralCalendar.date(from: localDate)
     }
 
     private func persist() {
         Self.save(Self.validatedCities(cities), key: citiesKey)
         Self.save(settings, key: settingsKey)
+        if let homeCity = Self.validatedHomeCity(homeCity) {
+            Self.save(homeCity, key: homeCityKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: homeCityKey)
+        }
     }
 
     private static func defaultCities() -> [City] {
@@ -281,12 +441,32 @@ final class TimezoneStore: ObservableObject {
     }
 
     private static func loadCatalog() -> [CatalogCity] {
-        guard let url = Bundle.module.url(forResource: "Cities", withExtension: "json"),
+        guard let url = catalogURL(),
               let data = try? Data(contentsOf: url),
               let cities = try? JSONDecoder().decode([CatalogCity].self, from: data) else {
             return []
         }
         return cities.filter { TimeZone(identifier: $0.tzIdentifier) != nil }
+    }
+
+    private static func catalogURL() -> URL? {
+        let fileManager = FileManager.default
+        let bundleName = "TimezoneBar_TimezoneBar"
+        let bundleCandidates = [
+            Bundle.main.url(forResource: bundleName, withExtension: "bundle"),
+            Bundle.main.resourceURL?.appendingPathComponent("\(bundleName).bundle"),
+            Bundle.main.bundleURL.appendingPathComponent("\(bundleName).bundle"),
+            Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("\(bundleName).bundle")
+        ].compactMap { $0 }
+
+        for bundleURL in bundleCandidates where fileManager.fileExists(atPath: bundleURL.path) {
+            let citiesURL = bundleURL.appendingPathComponent("Cities.json")
+            if fileManager.fileExists(atPath: citiesURL.path) {
+                return citiesURL
+            }
+        }
+
+        return Bundle.main.url(forResource: "Cities", withExtension: "json")
     }
 
     private static func load<T: Decodable>(_ type: T.Type, key: String) -> T? {
@@ -337,6 +517,22 @@ final class TimezoneStore: ObservableObject {
             }
             return copy
         }
+    }
+
+    private static func validatedHomeCity(_ loadedCity: City?) -> City? {
+        guard let loadedCity, TimeZone(identifier: loadedCity.tzIdentifier) != nil else {
+            return nil
+        }
+
+        var copy = loadedCity
+        copy.label = copy.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if copy.label.isEmpty {
+            copy.label = copy.tzIdentifier
+        }
+        copy.workStart = min(max(copy.workStart, validWorkHourRange.lowerBound), validWorkHourRange.upperBound - 1)
+        copy.workEnd = min(max(copy.workEnd, copy.workStart + 1), validWorkHourRange.upperBound)
+        copy.pinned = false
+        return copy
     }
 }
 
@@ -488,21 +684,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 }
 
 struct RootView: View {
+    enum SheetMode: Equatable {
+        case addCity
+        case changeHome
+    }
+
     @ObservedObject var store: TimezoneStore
     @State private var selectedTab = 0
-    @State private var isAddingCity = false
+    @State private var sheetMode: SheetMode?
 
     var body: some View {
         VStack(spacing: 0) {
             header
 
-            if isAddingCity {
-                AddCityView(store: store) {
-                    isAddingCity = false
+            if let sheetMode {
+                switch sheetMode {
+                case .addCity:
+                    AddCityView(store: store) {
+                        self.sheetMode = nil
+                    }
+                case .changeHome:
+                    HomeCityPickerView(store: store) {
+                        self.sheetMode = nil
+                    }
                 }
             } else {
                 if selectedTab == 0 {
-                    CityListView(store: store)
+                    CityListView(store: store) {
+                        sheetMode = .changeHome
+                    }
                 } else {
                     AlignmentGridView(store: store)
                 }
@@ -511,15 +721,17 @@ struct RootView: View {
                 scrubber
             }
         }
-        .frame(width: store.settings.showSeconds ? 392 : 360, height: 520)
+        .frame(width: 360, height: 520)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            if isAddingCity {
-                Text("Add city")
+            if let sheetMode {
+                Text(sheetMode == .addCity ? "Add city" : "Home city")
                     .font(.headline)
                     .lineLimit(1)
+                    .frame(height: 28, alignment: .center)
             } else {
                 Picker("", selection: $selectedTab) {
                     Text("List").tag(0)
@@ -530,9 +742,9 @@ struct RootView: View {
             }
 
             Spacer()
-            if isAddingCity {
+            if sheetMode != nil {
                 Button {
-                    isAddingCity = false
+                    sheetMode = nil
                 } label: {
                     Image(systemName: "xmark")
                         .frame(width: 28, height: 28)
@@ -541,7 +753,7 @@ struct RootView: View {
                 .help("Close")
             } else {
                 Button {
-                    isAddingCity = true
+                    sheetMode = .addCity
                 } label: {
                     Image(systemName: "plus")
                         .frame(width: 28, height: 28)
@@ -553,7 +765,9 @@ struct RootView: View {
             Menu {
                 Toggle("Pinned time in menu bar", isOn: $store.settings.showPinnedInMenuBar)
                 Toggle("24-hour clock", isOn: $store.settings.use24HourClock)
-                Toggle("Show seconds", isOn: $store.settings.showSeconds)
+                Button("Change Home City…") {
+                    sheetMode = .changeHome
+                }
                 Picker("Sort", selection: $store.settings.sortMode) {
                     ForEach(Settings.SortMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)
@@ -570,7 +784,7 @@ struct RootView: View {
             .menuStyle(.borderlessButton)
             .help("Settings")
         }
-        .padding(.leading, 8)
+        .padding(.leading, sheetMode == nil ? 12 : 20)
         .padding(.trailing, 12)
         .padding(.vertical, 12)
     }
@@ -676,9 +890,34 @@ struct PlainScrubberSlider: NSViewRepresentable {
 
 struct CityListView: View {
     @ObservedObject var store: TimezoneStore
+    let onChangeHome: () -> Void
 
     var body: some View {
         List {
+            Section {
+                ReferenceClockRow(
+                    store: store,
+                    city: store.currentTimeZoneReference,
+                    title: "Current",
+                    subtitle: currentSubtitle,
+                    badge: store.homeCity?.tzIdentifier == TimeZone.autoupdatingCurrent.identifier ? "Home" : nil,
+                    onChangeHome: onChangeHome
+                )
+                .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18))
+
+                if let homeCity = store.homeCity, store.shouldShowHomeReference {
+                    ReferenceClockRow(
+                        store: store,
+                        city: homeCity,
+                        title: "Home",
+                        subtitle: "\(homeCity.label) · \(homeCity.tzIdentifier)",
+                        badge: nil,
+                        onChangeHome: onChangeHome
+                    )
+                    .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18))
+                }
+            }
+
             ForEach(store.sortedCities) { city in
                 CityRow(store: store, city: city)
                     .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18))
@@ -697,6 +936,9 @@ struct CityListView: View {
                         .tint(.accentColor)
                     }
                     .contextMenu {
+                        Button("Set as Home") {
+                            store.setHome(city)
+                        }
                         Button("Set as pinned") {
                             store.setPinned(city)
                         }
@@ -712,6 +954,72 @@ struct CityListView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollDisabled(false)
+        .scrollIndicators(.visible)
+        .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .layoutPriority(1)
+        .clipped()
+    }
+
+    private var currentSubtitle: String {
+        store.displayLocation(for: .autoupdatingCurrent)
+    }
+}
+
+struct ReferenceClockRow: View {
+    @ObservedObject var store: TimezoneStore
+    let city: City
+    let title: String
+    let subtitle: String
+    let badge: String?
+    let onChangeHome: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(store.formattedTime(for: city))
+                .font(.system(.title3, design: .monospaced))
+                .frame(width: 66, alignment: .leading)
+            Image(systemName: title == "Home" ? "house.fill" : "location")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                    if let badge {
+                        Text(badge)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.secondary.opacity(0.12), in: Capsule())
+                    }
+                }
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .layoutPriority(1)
+            Spacer()
+            Menu {
+                Button("Change Home City…") {
+                    onChangeHome()
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Home city options")
+            .accessibilityLabel("Home city options")
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -723,7 +1031,7 @@ struct CityRow: View {
         HStack(spacing: 8) {
             Text(store.formattedTime(for: city))
                 .font(.system(.title3, design: .monospaced))
-                .frame(width: store.settings.showSeconds ? 100 : 66, alignment: .leading)
+                .frame(width: 66, alignment: .leading)
             Text(city.flag)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
@@ -753,6 +1061,11 @@ struct CityRow: View {
                     .background(.secondary.opacity(0.12), in: Capsule())
             }
             Menu {
+                Button {
+                    store.setHome(city)
+                } label: {
+                    Label("Set as Home", systemImage: "house")
+                }
                 Button {
                     store.setPinned(city)
                 } label: {
@@ -785,37 +1098,75 @@ struct CityRow: View {
 struct AlignmentGridView: View {
     @ObservedObject var store: TimezoneStore
 
+    private let labelColumnWidth: CGFloat = 78
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            hourLegend
-            ForEach(store.sortedCities) { city in
-                CityGridRow(store: store, city: city)
-            }
-            Spacer(minLength: 0)
-            VStack(alignment: .leading, spacing: 3) {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 8) {
+                bandLegend
+                hourLegend
+                CityGridRow(
+                    store: store,
+                    city: store.currentTimeZoneReference,
+                    displayName: "Current",
+                    labelColumnWidth: labelColumnWidth
+                )
+                if let homeCity = store.homeCity, store.shouldShowHomeReference {
+                    CityGridRow(
+                        store: store,
+                        city: homeCity,
+                        displayName: "Home",
+                        labelColumnWidth: labelColumnWidth
+                    )
+                }
                 ForEach(store.sortedCities) { city in
-                    HStack(spacing: 8) {
-                        Text(city.label)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .frame(width: 92, alignment: .leading)
-                        Text(store.formattedDayAndTime(for: city))
-                            .font(.caption.monospacedDigit())
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(.secondary)
+                    CityGridRow(
+                        store: store,
+                        city: city,
+                        displayName: city.label,
+                        labelColumnWidth: labelColumnWidth
+                    )
                 }
             }
-            .padding(.top, 4)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 10)
+        .scrollDisabled(false)
+        .scrollIndicators(.visible)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: 0,
+            maxHeight: .infinity,
+            alignment: .topLeading
+        )
+        .layoutPriority(1)
+        .clipped()
+    }
+
+    private var bandLegend: some View {
+        HStack(spacing: 10) {
+            Text("")
+                .frame(width: labelColumnWidth)
+            ForEach(TimeBand.allCases) { band in
+                HStack(spacing: 4) {
+                    BandSwatch(band: band)
+                        .accessibilityHidden(true)
+                    Text(band.label)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Legend: Working, Near Hours, Outside")
     }
 
     private var hourLegend: some View {
         HStack {
             Text("")
-                .frame(width: 78)
+                .frame(width: labelColumnWidth)
             ForEach([0, 3, 6, 9, 12, 15, 18, 21, 24], id: \.self) { hour in
                 Text("\(hour)")
                     .font(.caption2.monospacedDigit())
@@ -827,32 +1178,56 @@ struct AlignmentGridView: View {
 
 }
 
+struct BandSwatch: View {
+    let band: TimeBand
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2)
+            .fill(band.color)
+            .frame(width: 14, height: 8)
+    }
+}
+
 struct CityGridRow: View {
     @ObservedObject var store: TimezoneStore
     let city: City
+    let displayName: String
+    let labelColumnWidth: CGFloat
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(city.label)
-                .font(.caption)
-                .lineLimit(1)
-                .frame(width: 78, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayName)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(store.formattedDayAndTime(for: city))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: labelColumnWidth, alignment: .leading)
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Canvas { context, size in
                         let cellWidth = size.width / 48
                         for index in 0..<48 {
                             let date = dateForCell(index)
-                            let hour = store.cityLocalHour(for: city, at: date)
+                            let band = store.timeBand(for: city, at: date)
                             let rect = CGRect(
                                 x: Double(index) * cellWidth,
                                 y: 0,
                                 width: cellWidth - 1,
                                 height: size.height
                             )
-                            context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color(for: hour)))
+                            context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(band.color))
+                            if differentiateWithoutColor {
+                                context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(.primary.opacity(0.18)), lineWidth: 0.5)
+                            }
                         }
                     }
+                    .accessibilityHidden(true)
                     .onTapGesture { location in
                         let clamped = min(max(location.x / max(proxy.size.width, 1), 0), 1)
                         let minutes = Int((clamped * 24 * 60 / 15).rounded()) * 15
@@ -867,17 +1242,32 @@ struct CityGridRow: View {
             }
             .frame(height: 22)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            .focusable()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint("Use left and right arrows to move the timeline by 15 minutes.")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    store.setScrubSteps(Double(((store.scrubMinutes ?? 0) / 15) + 1))
+                case .decrement:
+                    store.setScrubSteps(Double(((store.scrubMinutes ?? 0) / 15) - 1))
+                @unknown default:
+                    break
+                }
+            }
+            .onMoveCommand { direction in
+                switch direction {
+                case .left:
+                    store.setScrubSteps(Double(((store.scrubMinutes ?? 0) / 15) - 1))
+                case .right:
+                    store.setScrubSteps(Double(((store.scrubMinutes ?? 0) / 15) + 1))
+                default:
+                    break
+                }
+            }
         }
-    }
-
-    private func color(for hour: Double) -> Color {
-        if hour >= Double(city.workStart), hour < Double(city.workEnd) {
-            return Color.green.opacity(0.62)
-        }
-        if (hour >= 7 && hour < Double(city.workStart)) || (hour >= Double(city.workEnd) && hour < 22) {
-            return Color.yellow.opacity(0.58)
-        }
-        return Color.gray.opacity(0.28)
+        .frame(height: 30)
     }
 
     private func localStartOfDay() -> Date {
@@ -898,9 +1288,314 @@ struct CityGridRow: View {
         let target = Calendar.current.startOfDay(for: Date()).addingTimeInterval(TimeInterval(minutes * 60))
         return Int((target.timeIntervalSince(Date()) / 60 / 15).rounded()) * 15
     }
+
+    private var accessibilityLabel: String {
+        let band = store.timeBand(for: city, at: store.referenceDate)
+        return "\(displayName), \(store.formattedDayAndTime(for: city)), \(band.label)"
+    }
 }
 
 struct AddCityView: View {
+    @ObservedObject var store: TimezoneStore
+    let onDismiss: () -> Void
+    @State private var query = ""
+    @State private var isAddingCustomCity = false
+    @State private var customCityName = ""
+    @State private var timeZoneQuery = ""
+
+    private var isAtCityLimit: Bool {
+        store.cities.count >= TimezoneStore.maximumCityCount
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var cityResults: [CatalogCity] {
+        store.results(matching: query)
+    }
+
+    private var matchingTimeZones: [String] {
+        let trimmed = timeZoneQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let identifiers = TimeZone.knownTimeZoneIdentifiers.sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        guard !trimmed.isEmpty else {
+            return identifiers
+        }
+
+        return identifiers.filter { identifier in
+            let searchableName = identifier.replacingOccurrences(of: "_", with: " ")
+            let timeZone = TimeZone(identifier: identifier)
+            let localizedName = timeZone?.localizedName(for: .generic, locale: .current) ?? ""
+            let abbreviation = timeZone?.abbreviation(for: store.referenceDate) ?? ""
+            return [identifier, searchableName, localizedName, abbreviation]
+                .contains { $0.localizedCaseInsensitiveContains(trimmed) }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchControls
+            content
+            footer
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                onDismiss()
+            } label: {
+                Label("Close Add City", systemImage: "xmark")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var searchControls: some View {
+        if isAddingCustomCity {
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundStyle(.secondary)
+                    TextField("City name", text: $customCityName)
+                        .textFieldStyle(.plain)
+                }
+                .padding(10)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search time zones", text: $timeZoneQuery)
+                        .textFieldStyle(.plain)
+                }
+                .padding(10)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        } else {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search city, country, or alias", text: $query)
+                    .textFieldStyle(.plain)
+            }
+            .disabled(isAtCityLimit)
+            .padding(10)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .opacity(isAtCityLimit ? 0.55 : 1)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isAtCityLimit {
+            emptyState(
+                icon: "building.2.crop.circle",
+                title: "Your city list is full",
+                message: "To add another city, remove one from your list first."
+            )
+        } else if isAddingCustomCity {
+            timeZoneResults
+        } else if !trimmedQuery.isEmpty && cityResults.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.secondary)
+
+                Text("City not found")
+                    .font(.headline)
+
+                Text("Try another search or add it with a time zone.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                Button("Add custom city…") {
+                    customCityName = trimmedQuery
+                    timeZoneQuery = ""
+                    isAddingCustomCity = true
+                }
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: 260)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(24)
+        } else {
+            cityResultList
+        }
+    }
+
+    private var cityResultList: some View {
+        List(cityResults) { result in
+            Button {
+                store.add(result)
+                onDismiss()
+            } label: {
+                HStack(spacing: 8) {
+                    Text(result.flag)
+                        .frame(width: 16, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.label)
+                            .font(.body.weight(.semibold))
+                        Text("\(result.country) · \(result.tzIdentifier)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .accessibilityLabel("Add \(result.label), \(result.country), \(result.tzIdentifier)")
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    @ViewBuilder
+    private var timeZoneResults: some View {
+        if matchingTimeZones.isEmpty {
+            emptyState(
+                icon: "globe",
+                title: "Time zone not found",
+                message: "Try a city, region, or abbreviation."
+            )
+        } else {
+            List(matchingTimeZones, id: \.self) { identifier in
+                let canAdd = store.canAddCustomCity(
+                    label: customCityName,
+                    tzIdentifier: identifier
+                )
+
+                Button {
+                    if store.addCustomCity(label: customCityName, tzIdentifier: identifier) {
+                        onDismiss()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "globe")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(identifier.replacingOccurrences(of: "_", with: " "))
+                                .font(.body.weight(.semibold))
+                            Text(timeZoneDetail(identifier))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !canAdd && isDuplicateCustomCity(identifier) {
+                            Text("Added")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .disabled(!canAdd)
+                .accessibilityLabel("Add \(customCityName) in \(identifier)")
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(footerMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if isAddingCustomCity && !isAtCityLimit {
+                Button("Back") {
+                    isAddingCustomCity = false
+                    timeZoneQuery = ""
+                }
+                .keyboardShortcut(.cancelAction)
+            } else {
+                Button(isAtCityLimit ? "Back to city list" : "Cancel") {
+                    onDismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .frame(height: 44)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    private var footerMessage: String {
+        if isAddingCustomCity {
+            return customCityName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Enter a city name."
+                : "Choose a time zone."
+        }
+        return "\(store.cities.count)/\(TimezoneStore.maximumCityCount) cities"
+    }
+
+    private func emptyState(icon: String, title: String, message: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 34))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+
+    private func isDuplicateCustomCity(_ identifier: String) -> Bool {
+        let trimmedName = customCityName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.cities.contains {
+            $0.tzIdentifier == identifier &&
+                $0.label.compare(trimmedName, options: .caseInsensitive) == .orderedSame
+        }
+    }
+
+    private func timeZoneDetail(_ identifier: String) -> String {
+        guard let timeZone = TimeZone(identifier: identifier) else {
+            return identifier
+        }
+        let seconds = timeZone.secondsFromGMT(for: store.referenceDate)
+        let sign = seconds >= 0 ? "+" : "−"
+        let totalMinutes = abs(seconds) / 60
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        let offset = minutes == 0
+            ? "UTC\(sign)\(hours)"
+            : String(format: "UTC%@%d:%02d", sign, hours, minutes)
+        let abbreviation = timeZone.abbreviation(for: store.referenceDate)
+        return [offset, abbreviation].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+struct HomeCityPickerView: View {
     @ObservedObject var store: TimezoneStore
     let onDismiss: () -> Void
     @State private var query = ""
@@ -915,16 +1610,17 @@ struct AddCityView: View {
             }
             .padding(10)
             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .padding(12)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
 
-            List(store.results(matching: query)) { result in
+            List(store.homeResults(matching: query)) { result in
                 Button {
-                    store.add(result)
+                    store.setHome(result)
                     onDismiss()
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Text(result.flag)
-                            .frame(width: 28, alignment: .leading)
+                            .frame(width: 16, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(result.label)
                                 .font(.body.weight(.semibold))
@@ -936,13 +1632,21 @@ struct AddCityView: View {
                         Spacer()
                     }
                     .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Set as Home, \(result.label), \(result.country), \(result.tzIdentifier)")
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
 
             HStack {
-                Text("\(store.cities.count)/\(TimezoneStore.maximumCityCount) cities")
+                Text("Choose the city you plan from.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -952,17 +1656,12 @@ struct AddCityView: View {
                 .keyboardShortcut(.cancelAction)
             }
             .frame(height: 44)
-            .padding(12)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
         .contentShape(Rectangle())
-        .contextMenu {
-            Button {
-                onDismiss()
-            } label: {
-                Label("Close Add City", systemImage: "xmark")
-            }
-        }
     }
 }
 
